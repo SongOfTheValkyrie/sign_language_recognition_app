@@ -6,24 +6,31 @@ import torch
 from torchvision.models import mobilenet_v3_small
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader, random_split
+import torch.nn as nn
+import torchvision.models as models
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-model_path = '/gris/gris-f/homestud/jplapper/SignLanguageApp/sign_language_recognition_app/asl_recognition_model.pth'
+model_path = 'SignLanguageApp/sign_language_recognition_app/asl_recognition_mobilenet.pth'
 state_dict = torch.load(model_path)
 mobilenet_small = mobilenet_v3_small(pretrained=True)
+NUM_CLASSES = 24
 
 for param in mobilenet_small.parameters():
     param.requires_grad = False
 
 # Adjust the final layer according to the number of classes in your dataset
 num_ftrs = mobilenet_small.classifier[3].in_features
-NUM_CLASSES = 24
 mobilenet_small.classifier[3] = nn.Linear(num_ftrs, NUM_CLASSES)
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 mobilenet_small.load_state_dict(state_dict)
 mobilenet_small.eval()
-dataset_path = '/gris/gris-f/homestud/jplapper/SignLanguageApp/SigNN Character Database'
+
+resnet_101_model = models.resnet101(pretrained=True) 
+num_ftrs_resnet = resnet_101_model.fc.in_features
+resnet_101_model.fc = nn.Linear(num_ftrs_resnet, NUM_CLASSES)
+resnet_101_model.load_state_dict(torch.load('SignLanguageApp/sign_language_recognition_app/asl_recognition_resnet101.pth'))
+resnet_101_model.eval().to(device)
+
+dataset_path = 'SignLanguageApp/SigNN Character Database'
 
 # Data augmentation and normalization for training
 # Just normalization for validation
@@ -117,6 +124,16 @@ def compute_mcs(input):
     
     return min(distances).item()
 
+def ensemble_predict_soft(inputs):
+    mobilenet_probs = mobilenet_small(inputs).softmax(dim=1)
+    resnet_probs = resnet_101_model(inputs).softmax(dim=1)
+
+    # Average the predicted probabilities
+    averaged_probs = (mobilenet_probs + resnet_probs) / 2.0
+
+    # Return the class with the highest probability
+    return torch.argmax(averaged_probs, dim=1)
+
 val_distances=[]
 for inputs, _ in val_loader:
     inputs = inputs.to(device)
@@ -153,5 +170,13 @@ image = image.unsqueeze(0).to(device)
 if is_ood(image):
     print("The input might be out-of-distribution!")
 else:
-    prediction = mobilenet_small(image)
-    # Handle the prediction
+    idx_to_class = {v: k for k, v in train_dataset.dataset.class_to_idx.items()}
+
+    # Use the ensemble to make a prediction
+    prediction_label = ensemble_predict_soft(image)
+    predicted_class = idx_to_class[prediction_label.item()]
+
+    print(f"Predicted class: {predicted_class}")
+
+
+
